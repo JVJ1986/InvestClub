@@ -1,3 +1,5 @@
+
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -46,10 +48,8 @@ const {useState,useEffect,useRef,useCallback,useMemo}=React;
    which are injected by the setup screen and stored in sessionStorage.
 ══════════════════════════════════════════════════════════════ */
 function getSB(){
-  const url=sessionStorage.getItem("sb_url")||"";
-  const key=sessionStorage.getItem("sb_key")||"";
-  return{url,key,ready:!!(url&&key)};
-}
+  return{url:"https://qellmrkqlyilhnhrlpmi.supabase.co
+",key:"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFlbGxtcmtxbHlpbGhuaHJscG1pIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODEyNDU4OTcsImV4cCI6MjA5N",ready:true};
 
 async function sbFetch(path,method="GET",body=null){
   const{url,key}=getSB();
