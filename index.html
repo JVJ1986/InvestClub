@@ -1,0 +1,1374 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
+<title>InvestClub</title>
+<meta name="description" content="Group Stock Investment Tracker"/>
+<meta name="theme-color" content="#0f1117"/>
+<meta name="mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="InvestClub"/>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+html,body,#root{height:100%;font-family:'DM Sans',sans-serif;background:#0f1117}
+:root{
+  --bg:#0f1117;--bg2:#181c27;--bg3:#1e2235;--bg4:#252a3d;
+  --border:#2e3450;--border2:#3d4468;
+  --text:#f0f2ff;--text2:#9ba3c4;--text3:#636b8a;
+  --blue:#4f8ef7;--blue-d:#1a3a7a;--blue-l:#7fb3ff;
+  --green:#2ecc8a;--green-d:#0d3d28;--green-l:#5eedb0;
+  --red:#f75f5f;--red-d:#3d1010;--red-l:#ff9090;
+  --gold:#f5a623;--gold-d:#3d2800;--gold-l:#ffd080;
+  --purple:#a855f7;--purple-d:#2d1040;
+}
+input,select,button,textarea{font-family:'DM Sans',sans-serif}
+::-webkit-scrollbar{width:3px}::-webkit-scrollbar-thumb{background:var(--border2);border-radius:3px}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
+@keyframes fadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+@keyframes spin{to{transform:rotate(360deg)}}
+.spinner{width:22px;height:22px;border:2.5px solid var(--border);border-top-color:var(--blue);border-radius:50%;animation:spin .7s linear infinite;display:inline-block;vertical-align:middle}
+</style>
+</head>
+<body><div id="root"></div>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script type="text/babel">
+const {useState,useEffect,useRef,useCallback,useMemo}=React;
+
+/* ==============================================================
+   SUPABASE CONFIG
+   To hardcode credentials (skip the connection screen), replace
+   the two empty strings below with your Project URL and anon key:
+     const HARDCODED_URL = "https://xxxx.supabase.co";
+     const HARDCODED_KEY = "eyJhbGci...";
+============================================================== */
+const HARDCODED_URL = "https://qellmrkqlyilhnhrlpmi.supabase.co";   // <- paste your Supabase Project URL here
+const HARDCODED_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFlbGxtcmtxbHlpbGhuaHJscG1pIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODEyNDU4OTcsImV4cCI6MjA5NjgyMTg5N30.V1z0EHBph67FVDfX08rE-rCEiCfK3KsSFeMSgCKJ8wQ";   // <- paste your Supabase anon/public key here
+
+function getSB(){
+  const url=(HARDCODED_URL||(sessionStorage.getItem("sb_url")||"")).trim().replace(/\/+$/,"");
+  const key=(HARDCODED_KEY||(sessionStorage.getItem("sb_key")||"")).trim();
+  if(url&&key){
+    sessionStorage.setItem("sb_url",url);
+    sessionStorage.setItem("sb_key",key);
+  }
+  return{url,key,ready:!!(url&&key)};
+}
+
+async function sbFetch(path,method="GET",body=null){
+  const{url,key}=getSB();
+  const opts={method,headers:{"apikey":key,"Authorization":"Bearer "+key,"Content-Type":"application/json","Prefer":"return=representation"}};
+  if(body)opts.body=JSON.stringify(body);
+  const res=await fetch(url+"/rest/v1/"+path,opts);
+  if(!res.ok){
+    let msg="";
+    try{const j=await res.json();msg=j.message||j.error||JSON.stringify(j);}
+    catch(_){msg="HTTP "+res.status;}
+    throw new Error(msg);
+  }
+  const txt=await res.text();
+  return txt?JSON.parse(txt):[];
+}
+
+/* ==============================================================
+   SUPABASE DB LAYER
+   Each table: ic_users, ic_contributions, ic_trades, ic_prices, ic_pricehistory
+============================================================== */
+const PAL=[
+  {bg:"#1a2e4a",text:"#7fb3ff",bar:"#4f8ef7"},
+  {bg:"#0d3328",text:"#5eedb0",bar:"#2ecc8a"},
+  {bg:"#3a1a0a",text:"#ffb97a",bar:"#f5a623"},
+  {bg:"#2a0d2d",text:"#d98aff",bar:"#a855f7"},
+  {bg:"#1a2a0a",text:"#aaef7a",bar:"#6dbf2e"},
+  {bg:"#2d1a0a",text:"#ffcc7a",bar:"#e8a020"},
+  {bg:"#0d1a3a",text:"#7adcff",bar:"#22b8e0"},
+  {bg:"#2a0a1a",text:"#ff9fc0",bar:"#e0558a"},
+];
+const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,6);
+const todayStr=()=>new Date().toISOString().split("T")[0];
+
+/* -- Full DB load from Supabase -- */
+async function loadDB(){
+  const[users,contributions,trades,prices,history]=await Promise.all([
+    sbFetch("ic_users?select=*&order=created_at.asc"),
+    sbFetch("ic_contributions?select=*&order=date.desc"),
+    sbFetch("ic_trades?select=*&order=date.asc"),
+    sbFetch("ic_prices?select=*"),
+    sbFetch("ic_pricehistory?select=*&order=t.asc"),
+  ]);
+  // Reconstruct prices map
+  const pricesMap={};
+  prices.forEach(p=>{pricesMap[p.symbol]=p.price;});
+  // Reconstruct priceHistory map
+  const histMap={};
+  history.forEach(h=>{if(!histMap[h.symbol])histMap[h.symbol]=[];histMap[h.symbol].push({t:h.t,p:h.price});});
+  // Reconstruct exchanges map
+  const exchangesMap={};
+  trades.forEach(t=>{exchangesMap[t.symbol]=t.exchange||"NSE";});
+  // Parse palette stored as JSON string
+  const parsedUsers=users.map(u=>({...u,palette:typeof u.palette==="string"?JSON.parse(u.palette):u.palette}));
+  return{users:parsedUsers,contributions,trades,prices:pricesMap,priceHistory:histMap,exchanges:exchangesMap};
+}
+
+/* -- Auth -- */
+async function dbLogin(mob,pw){
+  const users=await sbFetch(`ic_users?mobile=eq.${encodeURIComponent(mob)}&select=*`);
+  const u=users[0];
+  if(!u)return{ok:false,err:"Mobile number not registered."};
+  if(u.pw_hash!==btoa(pw))return{ok:false,err:"Incorrect password."};
+  const parsed={...u,palette:typeof u.palette==="string"?JSON.parse(u.palette):u.palette};
+  return{ok:true,user:parsed};
+}
+
+async function dbCheckSetup(){
+  const rows=await sbFetch("ic_users?id=eq.u_admin&select=needs_setup");
+  if(!rows.length)return true; // no admin row yet
+  return rows[0].needs_setup===true||rows[0].needs_setup==="true";
+}
+
+async function dbFinishSetup(mob,pw){
+  await sbFetch("ic_users?id=eq.u_admin","PATCH",{mobile:mob,pw_hash:btoa(pw),needs_setup:false});
+}
+
+async function dbEnsureAdmin(){
+  const rows=await sbFetch("ic_users?id=eq.u_admin&select=id");
+  if(rows.length)return;
+  await sbFetch("ic_users","POST",{
+    id:"u_admin",mobile:"",pw_hash:"",needs_setup:true,
+    name:"Admin",initials:"AD",role:"admin",joined_at:"2024-01-01",
+    palette:JSON.stringify(PAL[0])
+  });
+}
+
+async function dbAddUser({mobile,pw,name},userCount){
+  const existing=await sbFetch(`ic_users?mobile=eq.${encodeURIComponent(mobile)}&select=id`);
+  if(existing.length)return{ok:false,err:"Mobile already registered."};
+  const p=PAL[userCount%PAL.length];
+  const u={id:"u_"+uid(),mobile,pw_hash:btoa(pw),name,
+    initials:name.split(" ").map(w=>w[0]).join("").slice(0,2).toUpperCase(),
+    role:"member",joined_at:todayStr(),needs_setup:false,palette:JSON.stringify(p)};
+  await sbFetch("ic_users","POST",u);
+  return{ok:true};
+}
+
+async function dbEditUser(id,{name,mobile,pw}){
+  const patch={};
+  if(name){patch.name=name;patch.initials=name.split(" ").map(w=>w[0]).join("").slice(0,2).toUpperCase();}
+  if(mobile)patch.mobile=mobile;
+  if(pw)patch.pw_hash=btoa(pw);
+  await sbFetch(`ic_users?id=eq.${id}`,"PATCH",patch);
+}
+
+async function dbDeleteUser(id){
+  if(id==="u_admin")return false;
+  await sbFetch(`ic_users?id=eq.${id}`,"DELETE");
+  await sbFetch(`ic_contributions?user_id=eq.${id}`,"DELETE");
+  return true;
+}
+
+/* -- Contributions -- */
+async function dbAddContrib({userId,amount,date,note}){
+  const c={id:"c_"+uid(),user_id:userId,amount:parseFloat(amount),date,note:note||"",created_at:new Date().toISOString()};
+  await sbFetch("ic_contributions","POST",c);
+  return c;
+}
+async function dbEditContrib(id,{userId,amount,date,note}){
+  const patch={};
+  if(userId)patch.user_id=userId;
+  if(amount!==undefined)patch.amount=parseFloat(amount);
+  if(date)patch.date=date;
+  if(note!==undefined)patch.note=note;
+  await sbFetch(`ic_contributions?id=eq.${id}`,"PATCH",patch);
+}
+async function dbDeleteContrib(id){await sbFetch(`ic_contributions?id=eq.${id}`,"DELETE");}
+
+/* -- Trades -- */
+async function dbAddTrade({symbol,name,exchange,type,shares,price,date,note}){
+  const sym=symbol.toUpperCase(),exch=(exchange||"NSE").toUpperCase();
+  const t={id:"t_"+uid(),symbol:sym,name:name||sym,exchange:exch,type,
+    shares:parseInt(shares),price:parseFloat(price),date,note:note||"",created_at:new Date().toISOString()};
+  await sbFetch("ic_trades","POST",t);
+  // set initial price if none
+  const existing=await sbFetch(`ic_prices?symbol=eq.${sym}&select=symbol`);
+  if(!existing.length)await sbFetch("ic_prices","POST",{symbol:sym,price:parseFloat(price)});
+  return t;
+}
+async function dbEditTrade(id,{symbol,name,exchange,type,shares,price,date,note}){
+  const patch={};
+  if(symbol)patch.symbol=symbol.toUpperCase();
+  if(name)patch.name=name;
+  if(exchange)patch.exchange=exchange.toUpperCase();
+  if(type)patch.type=type;
+  if(shares)patch.shares=parseInt(shares);
+  if(price)patch.price=parseFloat(price);
+  if(date)patch.date=date;
+  if(note!==undefined)patch.note=note;
+  await sbFetch(`ic_trades?id=eq.${id}`,"PATCH",patch);
+}
+async function dbDeleteTrade(id){await sbFetch(`ic_trades?id=eq.${id}`,"DELETE");}
+
+/* -- Prices -- */
+async function dbSetPrice(symbol,price){
+  const sym=symbol.toUpperCase();const p=parseFloat(price);
+  const existing=await sbFetch(`ic_prices?symbol=eq.${sym}&select=symbol`);
+  if(existing.length)await sbFetch(`ic_prices?symbol=eq.${sym}`,"PATCH",{price:p});
+  else await sbFetch("ic_prices","POST",{symbol:sym,price:p});
+  // prune history: keep last 40
+  const hist=await sbFetch(`ic_pricehistory?symbol=eq.${sym}&order=t.asc&select=id,t`);
+  if(hist.length>=40){
+    const toDelete=hist.slice(0,hist.length-39).map(x=>x.id);
+    for(const id of toDelete)await sbFetch(`ic_pricehistory?id=eq.${id}`,"DELETE");
+  }
+  await sbFetch("ic_pricehistory","POST",{symbol:sym,t:Date.now(),price:p});
+}
+
+/* ==============================================================
+   CALCULATIONS (same as original — pure JS, no DB calls)
+============================================================== */
+function calcHoldings(db){
+  const map={};
+  [...db.trades].sort((a,b)=>a.date.localeCompare(b.date)).forEach(t=>{
+    if(!map[t.symbol])map[t.symbol]={symbol:t.symbol,name:t.name,exchange:t.exchange||"NSE",shares:0,totalCost:0,totalBuyShares:0};
+    const m=map[t.symbol];
+    if(t.exchange)m.exchange=t.exchange;
+    if(t.type==="BUY"){m.shares+=t.shares;m.totalCost+=t.shares*t.price;m.totalBuyShares+=t.shares;}
+    else{const avg=m.totalBuyShares>0?m.totalCost/m.totalBuyShares:t.price;m.shares=Math.max(0,m.shares-t.shares);m.totalCost=m.shares*avg;}
+  });
+  return Object.values(map).filter(h=>h.shares>0).map(h=>({
+    ...h,
+    avgPrice:h.totalBuyShares>0?h.totalCost/h.totalBuyShares:0,
+    currentPrice:db.prices[h.symbol]!==undefined?db.prices[h.symbol]:h.totalCost/Math.max(h.totalBuyShares,1),
+  }));
+}
+function calcCash(db){
+  const totalContributed=db.contributions.reduce((s,c)=>s+c.amount,0);
+  const totalBuySpend=db.trades.filter(t=>t.type==="BUY").reduce((s,t)=>s+t.shares*t.price,0);
+  const totalSellReceived=db.trades.filter(t=>t.type==="SELL").reduce((s,t)=>s+t.shares*t.price,0);
+  const cash=totalContributed-totalBuySpend+totalSellReceived;
+  return{totalContributed,totalBuySpend,totalSellReceived,cash:Math.max(0,cash)};
+}
+function calcPnL(db){
+  const holdings=calcHoldings(db);
+  const {totalContributed,totalBuySpend,totalSellReceived,cash}=calcCash(db);
+  const currentMV=holdings.reduce((s,h)=>s+h.shares*h.currentPrice,0);
+  const currentCost=holdings.reduce((s,h)=>s+h.shares*h.avgPrice,0);
+  const unrealizedTotal=currentMV-currentCost;
+  const runAvg={};let realizedTotal=0;
+  [...db.trades].sort((a,b)=>a.date.localeCompare(b.date)).forEach(t=>{
+    if(!runAvg[t.symbol])runAvg[t.symbol]={shares:0,cost:0};
+    const r=runAvg[t.symbol];
+    if(t.type==="BUY"){r.cost+=t.shares*t.price;r.shares+=t.shares;}
+    else{const avg=r.shares>0?r.cost/r.shares:t.price;realizedTotal+=(t.price-avg)*t.shares;r.shares=Math.max(0,r.shares-t.shares);r.cost=r.shares*avg;}
+  });
+  const totalPL=realizedTotal+unrealizedTotal;
+  const perUser=db.users.map(u=>{
+    // map user_id field from Supabase to userId for compat
+    const contrib=db.contributions.filter(c=>(c.user_id||c.userId)===u.id).reduce((s,c)=>s+c.amount,0);
+    const share=totalContributed>0?contrib/totalContributed:0;
+    const pl=share*totalPL;
+    return{user:u,contrib,share,sharePct:(share*100).toFixed(1),
+      pl,realized:share*realizedTotal,unrealized:share*unrealizedTotal,
+      currentValue:contrib+pl,cashShare:share*cash,
+      plPct:contrib>0?((pl/contrib)*100).toFixed(2):"0.00"};
+  });
+  return{totalPool:totalContributed,totalBuySpend,totalSellReceived,cash,
+    currentMV,currentCost,realizedTotal,unrealizedTotal,totalPL,
+    totalPLPct:totalContributed>0?((totalPL/totalContributed)*100).toFixed(2):"0.00",
+    perUser,holdings};
+}
+
+/* -- Price fetch (Yahoo Finance via allorigins proxy) -- */
+function exchSuffix(exch){return(exch||"").toUpperCase()==="BSE"?".BO":".NS";}
+async function fetchLivePrice(symbol,exchange){
+  const suffix=exchSuffix(exchange);
+  const sym=symbol.toUpperCase();
+  const attempts=[sym+suffix, sym+(suffix===".NS"?".BO":".NS")];
+  for(const yTicker of attempts){
+    try{
+      const url=`https://query1.finance.yahoo.com/v8/finance/chart/${yTicker}?interval=1d&range=1d`;
+      const proxy=`https://api.allorigins.win/get?url=${encodeURIComponent(url)}`;
+      const res=await fetch(proxy,{signal:AbortSignal.timeout(8000)});
+      const j=await res.json();
+      const meta=JSON.parse(j.contents)?.chart?.result?.[0]?.meta;
+      const p=meta?.regularMarketPrice||meta?.previousClose;
+      if(p&&p>0)return{ok:true,price:p,ticker:yTicker};
+    }catch(_){}
+  }
+  return{ok:false};
+}
+
+/* -- Exports -- */
+function exportPersonal(db,user,pnl){
+  const me=pnl.perUser.find(u=>u.user.id===user.id)||{};
+  const contribs=db.contributions.filter(c=>(c.user_id||c.userId)===user.id).sort((a,b)=>a.date.localeCompare(b.date));
+  const wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet([
+    ["InvestClub — Personal Statement"],["Member:",user.name],["Mobile:",user.mobile],["Date:",new Date().toLocaleDateString("en-IN")],[],
+    ["Contributed","Share %","Portfolio Value","Total P&L","Return %","Cash Share","Realized","Unrealized"],
+    [(me.contrib||0).toFixed(2),(me.sharePct||"0")+"%",(me.currentValue||0).toFixed(2),(me.pl||0).toFixed(2),
+     (me.plPct||"0")+"%",(me.cashShare||0).toFixed(2),(me.realized||0).toFixed(2),(me.unrealized||0).toFixed(2)],
+    [],["=== Contribution History ==="],["Date","Amount","Note"],
+    ...contribs.map(c=>[c.date,c.amount,c.note]),
+    [],["Total",me.contrib||0],
+  ]),"My Statement");
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet([
+    ["Symbol","Exchange","Shares","Avg Buy","Live Price","My Value","My P&L"],
+    ...pnl.holdings.map(h=>{const mv=h.shares*h.currentPrice,cost=h.shares*h.avgPrice,pl=mv-cost,s=me.share||0;
+      return[h.symbol,h.exchange,h.shares,h.avgPrice.toFixed(2),h.currentPrice.toFixed(2),(s*mv).toFixed(2),(s*pl).toFixed(2)];}),
+  ]),"Holdings");
+  XLSX.writeFile(wb,`${user.name.replace(/\s+/g,"_")}_${todayStr()}.xlsx`);
+}
+function exportGroup(db,pnl){
+  const wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet([
+    ["Name","Contributed","Share %","Value","P&L","Return %","Cash Share","Realized","Unrealized"],
+    ...pnl.perUser.filter(u=>u.contrib>0).sort((a,b)=>b.pl-a.pl).map(u=>[
+      u.user.name,u.contrib.toFixed(2),u.sharePct+"%",u.currentValue.toFixed(2),
+      u.pl.toFixed(2),u.plPct+"%",u.cashShare.toFixed(2),u.realized.toFixed(2),u.unrealized.toFixed(2)]),
+    [],["TOTAL",pnl.totalPool.toFixed(2),"",pnl.currentMV.toFixed(2),pnl.totalPL.toFixed(2),
+      pnl.totalPLPct+"%",pnl.cash.toFixed(2)],
+  ]),"Members P&L");
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet([
+    ["Symbol","Exchange","Shares","Avg Price","Live Price","Invested","Market Value","Unrealized P&L","Return %"],
+    ...pnl.holdings.map(h=>{const inv=h.shares*h.avgPrice,mv=h.shares*h.currentPrice,pl=mv-inv;
+      return[h.symbol,h.exchange,h.shares,h.avgPrice.toFixed(2),h.currentPrice.toFixed(2),
+        inv.toFixed(2),mv.toFixed(2),pl.toFixed(2),((pl/inv)*100).toFixed(2)+"%"];}),
+  ]),"Portfolio");
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet([
+    ["Type","Symbol","Exchange","Shares","Price","Value","Date","Note"],
+    ...db.trades.sort((a,b)=>b.date.localeCompare(a.date)).map(t=>[
+      t.type,t.symbol,t.exchange||"NSE",t.shares,t.price,(t.shares*t.price).toFixed(2),t.date,t.note]),
+  ]),"Trades");
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet([
+    ["Member","Amount","Date","Note"],
+    ...db.contributions.sort((a,b)=>b.date.localeCompare(a.date)).map(c=>{
+      const u=db.users.find(x=>x.id===(c.user_id||c.userId));return[u?.name||"?",c.amount,c.date,c.note];}),
+  ]),"Contributions");
+  XLSX.writeFile(wb,`InvestClub_Group_${todayStr()}.xlsx`);
+}
+
+/* ==============================================================
+   UI PRIMITIVES
+============================================================== */
+const fmt=n=>"₹"+Math.abs(n).toLocaleString("en-IN",{minimumFractionDigits:2,maximumFractionDigits:2});
+const fmtF=n=>"₹"+Math.abs(n).toLocaleString("en-IN",{minimumFractionDigits:2,maximumFractionDigits:2});
+const plColor=n=>n>=0?"var(--green)":"var(--red)";
+const plSign=n=>n>=0?"+":"-";
+
+function Avatar({user,size=38}){
+  const p=user.palette||PAL[0];
+  return<div style={{width:size,height:size,borderRadius:size/2,background:p.bg,color:p.text,display:"flex",alignItems:"center",justifyContent:"center",fontSize:size*.34,fontWeight:700,flexShrink:0,border:`1.5px solid ${p.bar}55`}}>{user.initials}</div>;
+}
+function Pill({c,bg,children}){return<span style={{fontSize:10,fontWeight:700,letterSpacing:.4,padding:"2px 8px",borderRadius:20,background:bg||(c+"22"),color:c,fontFamily:"'DM Mono',monospace"}}>{children}</span>;}
+function Card({children,style={}}){return<div style={{background:"var(--bg2)",border:"1px solid var(--border)",borderRadius:14,padding:"14px 16px",marginBottom:10,...style}}>{children}</div>;}
+function Lbl({children,style={}}){return<div style={{fontSize:10,fontWeight:700,letterSpacing:.8,color:"var(--text3)",textTransform:"uppercase",marginBottom:8,fontFamily:"'DM Mono',monospace",...style}}>{children}</div>;}
+function Field({label,icon,value,onChange,type="text",placeholder,readOnly}){
+  return(
+    <div style={{marginBottom:10}}>
+      {label&&<label style={{fontSize:11,color:"var(--text2)",display:"block",marginBottom:4,fontWeight:500}}>{label}</label>}
+      <div style={{position:"relative"}}>
+        {icon&&<span style={{position:"absolute",left:10,top:"50%",transform:"translateY(-50%)",fontSize:14,pointerEvents:"none"}}>{icon}</span>}
+        <input type={type} value={value} onChange={onChange} placeholder={placeholder} readOnly={readOnly}
+          style={{width:"100%",padding:`10px 12px 10px ${icon?"36px":"12px"}`,border:"1px solid var(--border2)",borderRadius:9,background:readOnly?"var(--bg)":"var(--bg3)",color:"var(--text)",fontSize:14,outline:"none"}}/>
+      </div>
+    </div>
+  );
+}
+function Sel({label,value,onChange,children}){
+  return(
+    <div style={{marginBottom:10}}>
+      {label&&<label style={{fontSize:11,color:"var(--text2)",display:"block",marginBottom:4,fontWeight:500}}>{label}</label>}
+      <select value={value} onChange={onChange} style={{width:"100%",padding:"10px 12px",border:"1px solid var(--border2)",borderRadius:9,background:"var(--bg3)",color:"var(--text)",fontSize:14,outline:"none"}}>{children}</select>
+    </div>
+  );
+}
+function Btn({children,onClick,color="var(--blue)",ghost,sm,disabled,full,style={}}){
+  return<button onClick={onClick} disabled={disabled} style={{padding:sm?"7px 14px":"11px 18px",background:ghost?"transparent":color,color:ghost?color:"#fff",border:`1.5px solid ${color}`,borderRadius:9,fontSize:sm?12:14,fontWeight:600,cursor:disabled?"not-allowed":"pointer",opacity:disabled?.5:1,width:full?"100%":"auto",...style}}>{children}</button>;
+}
+function Toast({msg,ok=true}){
+  return<div style={{position:"fixed",top:18,left:"50%",transform:"translateX(-50%)",background:"var(--bg3)",border:`1px solid ${ok?"var(--green)":"var(--red)"}`,color:ok?"var(--green-l)":"var(--red-l)",padding:"9px 18px",borderRadius:30,fontSize:13,fontWeight:600,zIndex:9999,boxShadow:"0 8px 32px rgba(0,0,0,.7)",whiteSpace:"nowrap",animation:"fadeIn .2s"}}>{msg}</div>;
+}
+function useToast(){
+  const[t,setT]=useState(null);
+  const show=(msg,ok=true)=>{setT({msg,ok});setTimeout(()=>setT(null),2600);};
+  return[t,show];
+}
+function Confirm({msg,onYes,onNo}){
+  return(
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.75)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:300,padding:20}}>
+      <div style={{background:"var(--bg2)",border:"1px solid var(--border)",borderRadius:16,padding:24,maxWidth:320,width:"100%",animation:"fadeIn .2s"}}>
+        <div style={{fontSize:14,color:"var(--text)",marginBottom:20,lineHeight:1.6}}>{msg}</div>
+        <div style={{display:"flex",gap:10}}>
+          <Btn onClick={onNo} ghost color="var(--text3)" style={{flex:1}}>Cancel</Btn>
+          <Btn onClick={onYes} color="var(--red)" style={{flex:1}}>Delete</Btn>
+        </div>
+      </div>
+    </div>
+  );
+}
+function Sheet({title,onClose,children}){
+  return(
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.8)",display:"flex",alignItems:"flex-end",zIndex:200,backdropFilter:"blur(3px)"}}>
+      <div style={{background:"var(--bg2)",borderRadius:"18px 18px 0 0",padding:"18px 18px 32px",width:"100%",maxHeight:"90vh",overflowY:"auto",border:"1px solid var(--border)",animation:"fadeIn .2s"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+          <div style={{fontSize:15,fontWeight:700,color:"var(--text)"}}>{title}</div>
+          <button onClick={onClose} style={{background:"var(--bg4)",border:"none",color:"var(--text2)",width:28,height:28,borderRadius:14,cursor:"pointer",fontSize:14,display:"flex",alignItems:"center",justifyContent:"center"}}>✕</button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+function Sparkline({data,color,w=70,h=28}){
+  const cvs=useRef();
+  useEffect(()=>{
+    const c=cvs.current;if(!c||!data||data.length<2)return;
+    const ctx=c.getContext("2d");c.width=w*2;c.height=h*2;ctx.scale(2,2);
+    const min=Math.min(...data),max=Math.max(...data),range=max-min||1;
+    const g=ctx.createLinearGradient(0,0,0,h);g.addColorStop(0,color+"55");g.addColorStop(1,color+"00");
+    ctx.beginPath();
+    data.forEach((v,i)=>{const x=(i/(data.length-1))*w,y=h-(((v-min)/range)*(h-4)+2);i===0?ctx.moveTo(x,y):ctx.lineTo(x,y);});
+    ctx.strokeStyle=color;ctx.lineWidth=1.5;ctx.stroke();
+    ctx.lineTo(w,h);ctx.lineTo(0,h);ctx.closePath();ctx.fillStyle=g;ctx.fill();
+  },[data,color,w,h]);
+  return<canvas ref={cvs} style={{width:w,height:h}}/>;
+}
+
+/* ==============================================================
+   SUPABASE SETUP SCREEN
+============================================================== */
+function SupabaseSetup({onReady}){
+  const[url,setUrl]=useState(sessionStorage.getItem("sb_url")||"");
+  const[key,setKey]=useState(sessionStorage.getItem("sb_key")||"");
+  const[busy,setBusy]=useState(false);
+  const[err,setErr]=useState("");
+
+  const test=async()=>{
+    setErr("");
+    if(!url||!key)return setErr("Both fields are required.");
+    if(!url.startsWith("https://"))return setErr("URL must start with https://");
+    setBusy(true);
+    sessionStorage.setItem("sb_url",url.trim().replace(/\/$/,""));
+    sessionStorage.setItem("sb_key",key.trim());
+    try{
+      await sbFetch("ic_users?select=id&limit=1");
+      setBusy(false);onReady();
+    }catch(e){
+      setBusy(false);
+      if(e.message.includes("relation") && e.message.includes("does not exist")){
+        setErr("Tables not found. Did you run the SQL setup? See instructions below.");
+      } else {
+        setErr("Connection failed: "+e.message.slice(0,120));
+      }
+    }
+  };
+
+  return(
+    <div style={{minHeight:"100vh",overflowY:"auto",display:"flex",flexDirection:"column",alignItems:"center",padding:"30px 20px 40px",
+      background:"radial-gradient(ellipse at 20% 20%,#1a2a4a 0%,#0f1117 55%,#0a1a14 100%)"}}>
+      <div style={{textAlign:"center",marginBottom:22}}>
+        <div style={{width:56,height:56,borderRadius:16,background:"linear-gradient(135deg,#4f8ef7,#2ecc8a)",display:"flex",alignItems:"center",justifyContent:"center",margin:"0 auto 10px",boxShadow:"0 0 32px #4f8ef766"}}><span style={{fontSize:24}}>📈</span></div>
+        <div style={{fontSize:22,fontWeight:700,color:"var(--text)"}}>InvestClub</div>
+        <div style={{fontSize:11,color:"var(--text3)",marginTop:2}}>Backend Connection</div>
+      </div>
+
+      <div style={{width:"100%",maxWidth:400,background:"var(--bg2)",borderRadius:18,padding:"20px 18px",border:"1px solid var(--border)",marginBottom:16}}>
+        <div style={{fontSize:14,fontWeight:700,color:"var(--text)",marginBottom:4}}>Connect Supabase</div>
+        <div style={{fontSize:11,color:"var(--text3)",marginBottom:14,lineHeight:1.6}}>Enter your free Supabase project credentials. Data is shared across all club members in real time.</div>
+        <Field label="Project URL" icon="🔗" value={url} onChange={e=>setUrl(e.target.value)} placeholder="https://xxxx.supabase.co"/>
+        <Field label="Anon/Public Key" icon="🔑" value={key} onChange={e=>setKey(e.target.value)} placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6..."/>
+        {err&&<div style={{background:"var(--red-d)",border:"1px solid var(--red)44",color:"var(--red-l)",fontSize:12,padding:"9px 12px",borderRadius:8,marginBottom:12}}>{err}</div>}
+        <Btn full disabled={busy} onClick={test}>{busy?<><span className="spinner"/> Connecting…</>:"Connect & Continue ->"}</Btn>
+      </div>
+
+      <div style={{width:"100%",maxWidth:400,background:"var(--bg2)",borderRadius:16,padding:"18px",border:"1px solid var(--border)"}}>
+        <div style={{fontSize:12,fontWeight:700,color:"var(--gold)",marginBottom:10}}>📋 One-Time Setup Instructions</div>
+        <div style={{fontSize:11,color:"var(--text2)",lineHeight:1.8}}>
+          <b style={{color:"var(--text)"}}>Step 1 — Create free Supabase project:</b><br/>
+          Go to <a href="https://supabase.com" target="_blank" style={{color:"var(--blue)"}}>supabase.com</a> -> New Project (free tier) -> copy the Project URL and anon key from Settings -> API.<br/><br/>
+          <b style={{color:"var(--text)"}}>Step 2 — Run this SQL</b> in Supabase SQL Editor:<br/>
+        </div>
+        <pre style={{background:"var(--bg)",borderRadius:8,padding:"10px 12px",fontSize:9.5,color:"var(--green-l)",overflowX:"auto",marginTop:8,lineHeight:1.6,border:"1px solid var(--border)"}}>
+{`create table if not exists ic_users (
+  id text primary key,
+  mobile text,
+  pw_hash text,
+  name text,
+  initials text,
+  role text default 'member',
+  joined_at text,
+  needs_setup boolean default false,
+  palette text,
+  created_at timestamptz default now()
+);
+create table if not exists ic_contributions (
+  id text primary key,
+  user_id text,
+  amount numeric,
+  date text,
+  note text,
+  created_at timestamptz default now()
+);
+create table if not exists ic_trades (
+  id text primary key,
+  symbol text,
+  name text,
+  exchange text default 'NSE',
+  type text,
+  shares integer,
+  price numeric,
+  date text,
+  note text,
+  created_at timestamptz default now()
+);
+create table if not exists ic_prices (
+  symbol text primary key,
+  price numeric
+);
+create table if not exists ic_pricehistory (
+  id bigserial primary key,
+  symbol text,
+  t bigint,
+  price numeric
+);
+-- Allow public access (the anon key controls this):
+alter table ic_users enable row level security;
+alter table ic_contributions enable row level security;
+alter table ic_trades enable row level security;
+alter table ic_prices enable row level security;
+alter table ic_pricehistory enable row level security;
+create policy "allow all" on ic_users for all using (true) with check (true);
+create policy "allow all" on ic_contributions for all using (true) with check (true);
+create policy "allow all" on ic_trades for all using (true) with check (true);
+create policy "allow all" on ic_prices for all using (true) with check (true);
+create policy "allow all" on ic_pricehistory for all using (true) with check (true);`}
+        </pre>
+        <div style={{fontSize:10,color:"var(--text3)",marginTop:8}}>After running the SQL, paste your credentials above and click Connect.</div>
+      </div>
+    </div>
+  );
+}
+
+/* ==============================================================
+   FIRST-TIME SETUP (Admin credentials)
+============================================================== */
+function SetupScreen({onDone}){
+  const[mob,setMob]=useState("");
+  const[pw,setPw]=useState("");
+  const[pw2,setPw2]=useState("");
+  const[showPw,setShowPw]=useState(false);
+  const[err,setErr]=useState("");
+  const[busy,setBusy]=useState(false);
+
+  const submit=async()=>{
+    setErr("");
+    if(!mob||mob.length<10)return setErr("Enter a valid 10-digit mobile number.");
+    if(!pw||pw.length<6)return setErr("Password must be at least 6 characters.");
+    if(pw!==pw2)return setErr("Passwords do not match.");
+    setBusy(true);
+    try{
+      await dbFinishSetup(mob,pw);
+      onDone();
+    }catch(e){setErr("Error: "+e.message);setBusy(false);}
+  };
+
+  return(
+    <div style={{minHeight:"100vh",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:20,
+      background:"radial-gradient(ellipse at 20% 20%,#1a2a4a 0%,#0f1117 55%,#0a1a14 100%)"}}>
+      <div style={{textAlign:"center",marginBottom:28}}>
+        <div style={{width:60,height:60,borderRadius:18,background:"linear-gradient(135deg,#4f8ef7,#2ecc8a)",display:"flex",alignItems:"center",justifyContent:"center",margin:"0 auto 12px",boxShadow:"0 0 36px #4f8ef766"}}><span style={{fontSize:26}}>📈</span></div>
+        <div style={{fontSize:24,fontWeight:700,color:"var(--text)",letterSpacing:-.4}}>InvestClub</div>
+        <div style={{fontSize:12,color:"var(--text3)",marginTop:3}}>First-time Setup</div>
+      </div>
+      <div style={{width:"100%",maxWidth:380,background:"var(--bg2)",borderRadius:18,padding:"22px 20px",border:"1px solid var(--border)",boxShadow:"0 20px 70px rgba(0,0,0,.5)"}}>
+        <div style={{fontSize:15,fontWeight:700,color:"var(--text)",marginBottom:6,textAlign:"center"}}>Set Admin Credentials</div>
+        <div style={{fontSize:12,color:"var(--text3)",textAlign:"center",marginBottom:18,lineHeight:1.6}}>Create your admin mobile number and password to get started.</div>
+        <Field label="Admin Mobile Number" icon="📱" value={mob} type="tel" onChange={e=>setMob(e.target.value.replace(/\D/g,"").slice(0,10))} placeholder="10-digit number"/>
+        <div style={{position:"relative"}}>
+          <Field label="Password" icon="🔒" value={pw} type={showPw?"text":"password"} onChange={e=>setPw(e.target.value)} placeholder="Min 6 characters"/>
+          <button onClick={()=>setShowPw(v=>!v)} style={{position:"absolute",right:10,bottom:22,background:"none",border:"none",color:"var(--text3)",cursor:"pointer",fontSize:13}}>{showPw?"🙈":"👁"}</button>
+        </div>
+        <Field label="Confirm Password" icon="🔒" value={pw2} type={showPw?"text":"password"} onChange={e=>setPw2(e.target.value)} placeholder="Re-enter password"/>
+        {err&&<div style={{background:"var(--red-d)",border:"1px solid var(--red)44",color:"var(--red-l)",fontSize:13,padding:"9px 12px",borderRadius:8,marginBottom:12,fontWeight:500}}>{err}</div>}
+        <Btn onClick={submit} full disabled={busy} style={{fontSize:15,fontWeight:700,padding:13}}>{busy?<><span className="spinner"/> Please wait…</>:"Create Admin Account ->"}</Btn>
+      </div>
+    </div>
+  );
+}
+
+/* ==============================================================
+   LOGIN
+============================================================== */
+function LoginScreen({onLogin}){
+  const[mob,setMob]=useState("");
+  const[pw,setPw]=useState("");
+  const[showPw,setShowPw]=useState(false);
+  const[err,setErr]=useState("");
+  const[busy,setBusy]=useState(false);
+
+  const submit=async()=>{
+    setErr("");
+    if(!mob||mob.length<10)return setErr("Enter a valid 10-digit mobile number.");
+    if(!pw||pw.length<6)return setErr("Password must be at least 6 characters.");
+    setBusy(true);
+    try{
+      const res=await dbLogin(mob,pw);
+      setBusy(false);
+      if(res.ok)onLogin(res.user);else setErr(res.err);
+    }catch(e){setBusy(false);setErr("DB error: "+e.message);}
+  };
+
+  return(
+    <div style={{minHeight:"100vh",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:20,background:"radial-gradient(ellipse at 20% 20%,#1a2a4a 0%,#0f1117 55%,#0a1a14 100%)"}}>
+      <div style={{textAlign:"center",marginBottom:28}}>
+        <div style={{width:60,height:60,borderRadius:18,background:"linear-gradient(135deg,#4f8ef7,#2ecc8a)",display:"flex",alignItems:"center",justifyContent:"center",margin:"0 auto 12px",boxShadow:"0 0 36px #4f8ef766"}}><span style={{fontSize:26}}>📈</span></div>
+        <div style={{fontSize:24,fontWeight:700,color:"var(--text)",letterSpacing:-.4}}>InvestClub</div>
+        <div style={{fontSize:12,color:"var(--text3)",marginTop:3}}>Group Stock Investment Tracker</div>
+      </div>
+      <div style={{width:"100%",maxWidth:380,background:"var(--bg2)",borderRadius:18,padding:"22px 20px",border:"1px solid var(--border)",boxShadow:"0 20px 70px rgba(0,0,0,.5)"}}>
+        <div style={{fontSize:16,fontWeight:700,color:"var(--text)",marginBottom:18,textAlign:"center"}}>Sign In</div>
+        <Field label="Mobile Number" icon="📱" value={mob} type="tel" onChange={e=>setMob(e.target.value.replace(/\D/g,"").slice(0,10))} placeholder="10-digit number"/>
+        <div style={{position:"relative"}}>
+          <Field label="Password" icon="🔒" value={pw} type={showPw?"text":"password"} onChange={e=>setPw(e.target.value)} placeholder="Your password"/>
+          <button onClick={()=>setShowPw(v=>!v)} style={{position:"absolute",right:10,bottom:22,background:"none",border:"none",color:"var(--text3)",cursor:"pointer",fontSize:13}}>{showPw?"🙈":"👁"}</button>
+        </div>
+        {err&&<div style={{background:"var(--red-d)",border:"1px solid var(--red)44",color:"var(--red-l)",fontSize:13,padding:"9px 12px",borderRadius:8,marginBottom:12,fontWeight:500}}>{err}</div>}
+        <Btn onClick={submit} disabled={busy} full style={{fontSize:15,fontWeight:700,padding:13}}>{busy?<><span className="spinner"/> Please wait…</>:"Sign In ->"}</Btn>
+      </div>
+    </div>
+  );
+}
+
+/* ==============================================================
+   DASHBOARD
+============================================================== */
+function Dashboard({db,user,pnl}){
+  const me=pnl.perUser.find(u=>u.user.id===user.id)||{contrib:0,pl:0,plPct:"0.00",sharePct:"0.0",currentValue:0,realized:0,unrealized:0,cashShare:0};
+  const up=me.pl>=0,gUp=pnl.totalPL>=0;
+  return(
+    <div style={{padding:"12px 12px 20px",animation:"fadeIn .3s"}}>
+      <div style={{background:`linear-gradient(135deg,${up?"#0d3d28":"#3d1010"},var(--bg2))`,border:`1px solid ${up?"var(--green)":"var(--red)"}44`,borderRadius:16,padding:16,marginBottom:10}}>
+        <div style={{fontSize:10,fontWeight:700,letterSpacing:.8,color:"var(--text3)",fontFamily:"'DM Mono',monospace",marginBottom:5}}>MY PORTFOLIO</div>
+        <div style={{fontSize:28,fontWeight:700,color:"var(--text)",letterSpacing:-.5}}>{fmtF(me.currentValue)}</div>
+        <div style={{display:"flex",alignItems:"center",gap:8,marginTop:4,flexWrap:"wrap"}}>
+          <span style={{fontSize:14,fontWeight:600,color:plColor(me.pl)}}>{plSign(me.pl)}{fmt(me.pl)}</span>
+          <span style={{fontSize:11,color:"var(--text3)"}}>({plSign(me.pl)}{me.plPct}% return)</span>
+          <Pill c={up?"var(--green)":"var(--red)"}>{me.sharePct}% share</Pill>
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8,marginTop:14,paddingTop:12,borderTop:"1px solid var(--border)"}}>
+          {[
+            {l:"INVESTED",v:fmt(me.contrib),c:"var(--text)"},
+            {l:"REALIZED",v:(me.realized>=0?"+":"-")+fmt(me.realized),c:plColor(me.realized)},
+            {l:"UNREALIZED",v:(me.unrealized>=0?"+":"-")+fmt(me.unrealized),c:plColor(me.unrealized)},
+            {l:"MY CASH",v:fmt(me.cashShare),c:"var(--gold)"},
+          ].map(m=>(
+            <div key={m.l}>
+              <div style={{fontSize:9,color:"var(--text3)",marginBottom:2,fontFamily:"'DM Mono',monospace"}}>{m.l}</div>
+              <div style={{fontSize:12,fontWeight:700,color:m.c}}>{m.v}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div style={{background:"linear-gradient(135deg,var(--gold-d),var(--bg2))",border:"1px solid var(--gold)44",borderRadius:14,padding:"14px 16px",marginBottom:10}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+          <div>
+            <div style={{fontSize:10,fontWeight:700,letterSpacing:.8,color:"var(--gold)",fontFamily:"'DM Mono',monospace",marginBottom:4}}>💰 REMAINING CASH</div>
+            <div style={{fontSize:26,fontWeight:700,color:"var(--gold-l)"}}>{fmtF(pnl.cash)}</div>
+            <div style={{fontSize:11,color:"var(--text3)",marginTop:2}}>Contributed − Invested in stocks + Sell proceeds</div>
+          </div>
+          <span style={{fontSize:28,opacity:.35}}>💵</span>
+        </div>
+        <div style={{marginTop:12,paddingTop:12,borderTop:"1px solid var(--gold)22"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+            <span style={{fontSize:11,color:"var(--text3)"}}>Total Contributed</span>
+            <span style={{fontSize:12,fontWeight:700,color:"var(--text)",fontFamily:"'DM Mono',monospace"}}>{fmt(pnl.totalPool)}</span>
+          </div>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+            <span style={{fontSize:11,color:"var(--text3)"}}>− Invested in stocks (buy cost)</span>
+            <span style={{fontSize:12,fontWeight:700,color:"var(--red-l)",fontFamily:"'DM Mono',monospace"}}>−{fmt(pnl.totalBuySpend)}</span>
+          </div>
+          {pnl.totalSellReceived>0&&(
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+              <span style={{fontSize:11,color:"var(--text3)"}}>+ Sell proceeds received</span>
+              <span style={{fontSize:12,fontWeight:700,color:"var(--green-l)",fontFamily:"'DM Mono',monospace"}}>+{fmt(pnl.totalSellReceived)}</span>
+            </div>
+          )}
+          <div style={{height:1,background:"var(--gold)33",margin:"6px 0"}}/>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <span style={{fontSize:11,fontWeight:700,color:"var(--gold)"}}>= Remaining Cash</span>
+            <span style={{fontSize:13,fontWeight:700,color:"var(--gold-l)",fontFamily:"'DM Mono',monospace"}}>{fmt(pnl.cash)}</span>
+          </div>
+          <div style={{marginTop:10}}>
+            <div style={{display:"flex",justifyContent:"space-between",fontSize:9,color:"var(--text3)",marginBottom:3}}>
+              <span>{pnl.totalPool>0?((pnl.currentCost/pnl.totalPool)*100).toFixed(0):0}% deployed</span>
+              <span>{pnl.totalPool>0?((pnl.cash/pnl.totalPool)*100).toFixed(0):0}% cash</span>
+            </div>
+            <div style={{background:"var(--bg)",borderRadius:4,height:6,overflow:"hidden",display:"flex"}}>
+              <div style={{height:6,width:`${pnl.totalPool>0?Math.min(100,(pnl.currentCost/pnl.totalPool)*100):0}%`,background:"linear-gradient(90deg,var(--blue),var(--purple))",borderRadius:4}}/>
+              <div style={{height:6,flex:1,background:"var(--gold)44"}}/>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:10}}>
+        {[
+          {l:"GROUP POOL",v:fmt(pnl.totalPool),c:"var(--blue)",sub:`${db.users.length} members`},
+          {l:"MARKET VALUE",v:fmt(pnl.currentMV),c:"var(--text)",sub:`${pnl.holdings.length} stocks`},
+          {l:"GROUP P&L",v:(gUp?"+":"-")+fmt(pnl.totalPL),c:plColor(pnl.totalPL),sub:pnl.totalPLPct+"% return"},
+          {l:"REALIZED",v:(pnl.realizedTotal>=0?"+":"-")+fmt(pnl.realizedTotal),c:"var(--green)",sub:"Booked gains"},
+        ].map(m=>(
+          <div key={m.l} style={{background:"var(--bg2)",border:"1px solid var(--border)",borderRadius:12,padding:"11px 13px"}}>
+            <div style={{fontSize:9,color:"var(--text3)",fontFamily:"'DM Mono',monospace",fontWeight:700,marginBottom:3}}>{m.l}</div>
+            <div style={{fontSize:16,fontWeight:700,color:m.c}}>{m.v}</div>
+            <div style={{fontSize:9,color:"var(--text3)",marginTop:2}}>{m.sub}</div>
+          </div>
+        ))}
+      </div>
+
+      {pnl.holdings.length>0&&(
+        <Card>
+          <Lbl>Live Holdings</Lbl>
+          {pnl.holdings.map((h,i)=>{
+            const pl=h.shares*h.currentPrice-h.shares*h.avgPrice;
+            const pct=h.avgPrice>0?((h.currentPrice-h.avgPrice)/h.avgPrice*100).toFixed(1):"0.0";
+            const up=pl>=0;
+            const hist=(db.priceHistory[h.symbol]||[]).map(x=>x.p);
+            if(hist.length<2)hist.push(h.avgPrice,h.currentPrice);
+            return(
+              <div key={h.symbol} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 0",borderBottom:i<pnl.holdings.length-1?"1px solid var(--border)":"none"}}>
+                <div>
+                  <div style={{display:"flex",alignItems:"center",gap:6}}>
+                    <span style={{fontSize:13,fontWeight:700,color:"var(--text)",fontFamily:"'DM Mono',monospace"}}>{h.symbol}</span>
+                    <span style={{fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:8,background:h.exchange==="NSE"?"#0d3d1a":"#0d1a3d",color:h.exchange==="NSE"?"#5eedb0":"#7fb3ff",fontFamily:"'DM Mono',monospace"}}>{h.exchange}</span>
+                  </div>
+                  <div style={{fontSize:10,color:"var(--text3)",marginTop:2}}>{h.shares} sh · avg {fmt(h.avgPrice)}</div>
+                </div>
+                <div style={{display:"flex",alignItems:"center",gap:8}}>
+                  <Sparkline data={hist} color={up?"#2ecc8a":"#f75f5f"}/>
+                  <div style={{textAlign:"right"}}>
+                    <div style={{fontSize:13,fontWeight:700,color:"var(--text)",fontFamily:"'DM Mono',monospace"}}>{fmt(h.currentPrice)}</div>
+                    <div style={{fontSize:10,color:up?"var(--green)":"var(--red)"}}>{up?"+":""}{pct}%</div>
+                    <div style={{fontSize:9,color:"var(--text3)"}}>{(up?"+":"-")+fmt(pl)}</div>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </Card>
+      )}
+    </div>
+  );
+}
+
+/* ==============================================================
+   P&L TAB
+============================================================== */
+function PnLTab({pnl,user}){
+  const sorted=[...pnl.perUser].filter(u=>u.contrib>0).sort((a,b)=>b.pl-a.pl);
+  return(
+    <div style={{padding:"12px 12px 20px",animation:"fadeIn .3s"}}>
+      <Card>
+        <Lbl>Group Performance</Lbl>
+        <div style={{display:"flex",flexWrap:"wrap",gap:14,marginBottom:10}}>
+          {[
+            {l:"POOL",v:fmt(pnl.totalPool),c:"var(--blue)"},
+            {l:"MARKET VALUE",v:fmt(pnl.currentMV),c:"var(--text)"},
+            {l:"TOTAL P&L",v:plSign(pnl.totalPL)+fmt(pnl.totalPL),c:plColor(pnl.totalPL)},
+            {l:"CASH",v:fmt(pnl.cash),c:"var(--gold)"},
+          ].map(m=>(
+            <div key={m.l}>
+              <div style={{fontSize:9,color:"var(--text3)",fontFamily:"'DM Mono',monospace"}}>{m.l}</div>
+              <div style={{fontSize:16,fontWeight:700,color:m.c,marginTop:2}}>{m.v}</div>
+            </div>
+          ))}
+        </div>
+        <div style={{background:"var(--bg)",borderRadius:6,height:7,overflow:"hidden",marginBottom:4}}>
+          <div style={{height:7,width:`${Math.min(100,Math.max(0,(pnl.currentMV/Math.max(pnl.totalPool,1))*100))}%`,background:"linear-gradient(90deg,var(--blue),var(--green))",borderRadius:6}}/>
+        </div>
+        <div style={{display:"flex",justifyContent:"space-between"}}>
+          <span style={{fontSize:9,color:"var(--text3)"}}>Pool {fmt(pnl.totalPool)}</span>
+          <span style={{fontSize:9,color:plColor(pnl.totalPL)}}>{plSign(pnl.totalPL)}{pnl.totalPLPct}%</span>
+        </div>
+      </Card>
+      <Card>
+        <Lbl>Individual P&L</Lbl>
+        {sorted.length===0&&<div style={{textAlign:"center",color:"var(--text3)",fontSize:13,padding:"16px 0"}}>No contributions yet</div>}
+        {sorted.map((u,i)=>{
+          const isMe=u.user.id===user.id,up=u.pl>=0;
+          return(
+            <div key={u.user.id} style={{padding:"12px 0",borderBottom:i<sorted.length-1?"1px solid var(--border)":"none"}}>
+              <div style={{display:"flex",alignItems:"center",gap:10}}>
+                <Avatar user={u.user} size={34}/>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{display:"flex",alignItems:"center",gap:5,flexWrap:"wrap"}}>
+                    <span style={{fontSize:13,fontWeight:600,color:"var(--text)"}}>{u.user.name}</span>
+                    {isMe&&<Pill c="var(--blue)">YOU</Pill>}
+                    {u.user.role==="admin"&&<Pill c="var(--gold)">ADMIN</Pill>}
+                  </div>
+                  <div style={{fontSize:10,color:"var(--text3)",marginTop:2}}>{fmt(u.contrib)} · {u.sharePct}% share</div>
+                  <div style={{marginTop:5,background:"var(--bg)",borderRadius:2,height:3,overflow:"hidden"}}>
+                    <div style={{height:3,width:`${Math.min(100,parseFloat(u.sharePct))}%`,background:u.user.palette?.bar||"var(--blue)",borderRadius:2}}/>
+                  </div>
+                </div>
+                <div style={{textAlign:"right",flexShrink:0}}>
+                  <div style={{fontSize:14,fontWeight:700,color:plColor(u.pl)}}>{plSign(u.pl)}{fmt(u.pl)}</div>
+                  <div style={{fontSize:10,color:plColor(u.pl),fontFamily:"'DM Mono',monospace"}}>{plSign(u.pl)}{u.plPct}%</div>
+                </div>
+              </div>
+              <div style={{display:"flex",gap:10,marginTop:6,paddingLeft:44,flexWrap:"wrap"}}>
+                {[
+                  {l:"Value",v:fmt(u.currentValue),c:"var(--text)"},
+                  {l:"Realized",v:(u.realized>=0?"+":"-")+fmt(u.realized),c:plColor(u.realized)},
+                  {l:"Unrealized",v:(u.unrealized>=0?"+":"-")+fmt(u.unrealized),c:plColor(u.unrealized)},
+                  {l:"Cash",v:fmt(u.cashShare),c:"var(--gold)"},
+                ].map(x=>(
+                  <div key={x.l} style={{fontSize:9,color:"var(--text3)"}}>{x.l}: <span style={{color:x.c,fontWeight:600}}>{x.v}</span></div>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      </Card>
+    </div>
+  );
+}
+
+/* ==============================================================
+   ADMIN PANEL
+============================================================== */
+function ExchangeToggle({value,onChange,sym}){
+  return(
+    <div style={{marginBottom:10}}>
+      <label style={{fontSize:11,color:"var(--text2)",display:"block",marginBottom:4,fontWeight:500}}>Exchange</label>
+      <div style={{display:"flex",gap:8,marginBottom:4}}>
+        {["NSE","BSE"].map(ex=>(
+          <button key={ex} onClick={()=>onChange(ex)}
+            style={{flex:1,padding:"9px",border:`1.5px solid ${value===ex?ex==="NSE"?"var(--green)":"var(--blue)":"var(--border)"}`,
+              borderRadius:9,background:value===ex?ex==="NSE"?"var(--green-d)":"var(--blue-d)":"var(--bg)",
+              color:value===ex?ex==="NSE"?"var(--green-l)":"var(--blue-l)":"var(--text3)",
+              fontSize:13,fontWeight:700,cursor:"pointer"}}>
+            {ex==="NSE"?"🟢 NSE":"🔵 BSE"}
+          </button>
+        ))}
+      </div>
+      {sym&&<div style={{fontSize:10,color:"var(--text3)",fontFamily:"'DM Mono',monospace"}}>
+        Yahoo ticker: <span style={{color:"var(--gold)"}}>{sym.toUpperCase()}{exchSuffix(value)}</span>
+      </div>}
+    </div>
+  );
+}
+
+function EditSheet({sheet,db,onDone,onClose,show}){
+  const{type,data}=sheet;
+  const[f,setF]=useState(()=>{
+    if(type==="user")return{name:data.name,mobile:data.mobile,pw:""};
+    if(type==="contrib")return{userId:data.user_id||data.userId,amount:String(data.amount),date:data.date,note:data.note||""};
+    if(type==="trade")return{symbol:data.symbol,name:data.name,exchange:data.exchange||"NSE",type:data.type,shares:String(data.shares),price:String(data.price),date:data.date,note:data.note||""};
+    return{};
+  });
+  const[busy,setBusy]=useState(false);
+  const upd=k=>e=>setF(p=>({...p,[k]:e.target.value}));
+  const save=async()=>{
+    setBusy(true);
+    try{
+      if(type==="user"){await dbEditUser(data.id,f);show("Member updated v");}
+      else if(type==="contrib"){await dbEditContrib(data.id,f);show("Contribution updated v");}
+      else if(type==="trade"){await dbEditTrade(data.id,f);show("Trade updated v");}
+      onDone();
+    }catch(e){show("Error: "+e.message.slice(0,60),false);setBusy(false);}
+  };
+  return(
+    <Sheet title={`Edit ${type==="user"?"Member":type==="contrib"?"Contribution":"Trade"}`} onClose={onClose}>
+      {type==="user"&&(<>
+        <Field label="Full Name" icon="👤" value={f.name} onChange={upd("name")}/>
+        <Field label="Mobile Number" icon="📱" type="tel" value={f.mobile} onChange={upd("mobile")}/>
+        <Field label="New Password (blank = keep)" icon="🔒" value={f.pw} onChange={upd("pw")} placeholder="Leave blank to keep"/>
+      </>)}
+      {type==="contrib"&&(<>
+        <Sel label="Member" value={f.userId} onChange={upd("userId")}>{db.users.map(u=><option key={u.id} value={u.id}>{u.name}</option>)}</Sel>
+        <Field label="Amount (₹)" icon="₹" type="number" value={f.amount} onChange={upd("amount")}/>
+        <Field label="Date" icon="📅" type="date" value={f.date} onChange={upd("date")}/>
+        <Field label="Note" icon="📝" value={f.note} onChange={upd("note")}/>
+      </>)}
+      {type==="trade"&&(<>
+        <div style={{display:"flex",gap:8,marginBottom:10}}>
+          {["BUY","SELL"].map(t=>(
+            <button key={t} onClick={()=>setF(p=>({...p,type:t}))}
+              style={{flex:1,padding:"8px",border:`1.5px solid ${f.type===t?(t==="BUY"?"var(--green)":"var(--red)"):"var(--border)"}`,borderRadius:9,background:f.type===t?(t==="BUY"?"var(--green-d)":"var(--red-d)"):"var(--bg)",color:f.type===t?(t==="BUY"?"var(--green-l)":"var(--red-l)"):"var(--text3)",fontSize:12,fontWeight:700,cursor:"pointer"}}>
+              {t==="BUY"?"📈 BUY":"📉 SELL"}
+            </button>
+          ))}
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+          <Field label="Symbol" value={f.symbol} onChange={upd("symbol")}/>
+          <Field label="Company" value={f.name} onChange={upd("name")}/>
+        </div>
+        <ExchangeToggle value={f.exchange} onChange={ex=>setF(p=>({...p,exchange:ex}))} sym={f.symbol}/>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+          <Field label="Shares" type="number" value={f.shares} onChange={upd("shares")}/>
+          <Field label="Price (₹)" type="number" value={f.price} onChange={upd("price")}/>
+        </div>
+        <Field label="Date" icon="📅" type="date" value={f.date} onChange={upd("date")}/>
+        <Field label="Note" icon="📝" value={f.note} onChange={upd("note")}/>
+      </>)}
+      <Btn full disabled={busy} onClick={save}>{busy?<><span className="spinner"/> Saving…</>:"Save Changes"}</Btn>
+    </Sheet>
+  );
+}
+
+function AdminPanel({db,onUpdate}){
+  const[tab,setTab]=useState("members");
+  const[toast,show]=useToast();
+  const[confirm,setConfirm]=useState(null);
+  const[editSheet,setEditSheet]=useState(null);
+
+  // Members form
+  const[uName,setUName]=useState("");const[uMob,setUMob]=useState("");const[uPw,setUPw]=useState("");
+
+  // Contributions form
+  const[cUid,setCUid]=useState("");const[cAmt,setCAmt]=useState("");
+  const[cDate,setCDate]=useState(todayStr());const[cNote,setCNote]=useState("");
+
+  // Trades form
+  const[tType,setTType]=useState("BUY");const[tSym,setTSym]=useState("");const[tName,setTName]=useState("");
+  const[tExch,setTExch]=useState("NSE");const[tShares,setTShares]=useState("");const[tPrice,setTPrice]=useState("");
+  const[tDate,setTDate]=useState(todayStr());const[tNote,setTNote]=useState("");
+  const[fetched,setFetched]=useState(null);const[fetchBusy,setFetchBusy]=useState(false);
+
+  const doFetch=async(sym,exch)=>{
+    setFetchBusy(true);
+    const r=await fetchLivePrice(sym,exch);
+    if(r.ok){setTPrice(r.price.toFixed(2));setFetched(r.price);show("Price fetched: ₹"+r.price.toFixed(2));}
+    else show("Could not fetch price",false);
+    setFetchBusy(false);
+    return r;
+  };
+  const fetchAll=async()=>{
+    const holdings=calcHoldings(db);
+    if(!holdings.length)return show("No holdings to update",false);
+    show("Fetching all prices…");
+    for(const h of holdings){
+      const r=await fetchLivePrice(h.symbol,h.exchange);
+      if(r.ok)await dbSetPrice(h.symbol,r.price);
+    }
+    show("All prices updated v");
+    onUpdate();
+  };
+
+  const tabDefs=[
+    {id:"members",label:"Members",icon:"👥"},
+    {id:"contributions",label:"Contributions",icon:"💰"},
+    {id:"trades",label:"Trades",icon:"📊"},
+  ];
+
+  return(
+    <div style={{paddingBottom:20,animation:"fadeIn .3s"}}>
+      {toast&&<Toast msg={toast.msg} ok={toast.ok}/>}
+      {confirm&&<Confirm msg={confirm.msg} onYes={()=>{confirm.fn();setConfirm(null);}} onNo={()=>setConfirm(null)}/>}
+      {editSheet&&<EditSheet sheet={editSheet} db={db} onDone={()=>{setEditSheet(null);onUpdate();}} onClose={()=>setEditSheet(null)} show={show}/>}
+
+      <div style={{display:"flex",gap:6,padding:"12px 12px 0",overflowX:"auto"}}>
+        {tabDefs.map(t=>(
+          <button key={t.id} onClick={()=>setTab(t.id)}
+            style={{display:"flex",alignItems:"center",gap:5,padding:"7px 13px",borderRadius:20,border:"1px solid var(--border)",
+              background:tab===t.id?"var(--blue)":"var(--bg2)",color:tab===t.id?"#fff":"var(--text2)",
+              fontSize:12,fontWeight:600,cursor:"pointer",whiteSpace:"nowrap",flexShrink:0}}>
+            {t.icon} {t.label}
+          </button>
+        ))}
+      </div>
+
+      <div style={{padding:"10px 12px 0"}}>
+
+        {/* -- MEMBERS -- */}
+        {tab==="members"&&(<>
+          <Card>
+            <Lbl>Add New Member</Lbl>
+            <Field label="Full Name" icon="👤" value={uName} onChange={e=>setUName(e.target.value)} placeholder="e.g. Priya Kumar"/>
+            <Field label="Mobile Number" icon="📱" type="tel" value={uMob} onChange={e=>setUMob(e.target.value.replace(/\D/g,"").slice(0,10))} placeholder="10-digit"/>
+            <Field label="Set Password" icon="🔒" value={uPw} onChange={e=>setUPw(e.target.value)} placeholder="Min 6 characters"/>
+            <Btn full onClick={async()=>{
+              if(!uName||!uMob||uMob.length<10||!uPw||uPw.length<6)return show("Fill all fields correctly",false);
+              const r=await dbAddUser({mobile:uMob,pw:uPw,name:uName.trim()},db.users.length);
+              if(r.ok){show("Member added v");setUName("");setUMob("");setUPw("");onUpdate();}else show(r.err,false);
+            }}>Add Member</Btn>
+          </Card>
+          <Card>
+            <Lbl>All Members ({db.users.length})</Lbl>
+            {db.users.map((u,i)=>(
+              <div key={u.id} style={{display:"flex",alignItems:"center",gap:10,padding:"9px 0",borderBottom:i<db.users.length-1?"1px solid var(--border)":"none"}}>
+                <Avatar user={u} size={32}/>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontSize:13,fontWeight:600,color:"var(--text)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{u.name}</div>
+                  <div style={{fontSize:10,color:"var(--text3)",fontFamily:"'DM Mono',monospace"}}>📱 {u.mobile} · {u.joined_at||u.joinedAt}</div>
+                </div>
+                <Pill c={u.role==="admin"?"var(--gold)":"var(--text3)"}>{u.role.toUpperCase()}</Pill>
+                <button onClick={()=>setEditSheet({type:"user",data:u})} style={{background:"var(--bg3)",border:"1px solid var(--border2)",borderRadius:7,padding:"4px 8px",cursor:"pointer",color:"var(--text2)",fontSize:11}}>✏️</button>
+                {u.id!=="u_admin"&&<button onClick={()=>setConfirm({msg:`Delete "${u.name}"? Their contributions will also be removed.`,fn:async()=>{await dbDeleteUser(u.id);onUpdate();show("Deleted");}})} style={{background:"var(--red-d)",border:"1px solid var(--red)44",borderRadius:7,padding:"4px 8px",cursor:"pointer",color:"var(--red-l)",fontSize:11}}>🗑</button>}
+              </div>
+            ))}
+          </Card>
+        </>)}
+
+        {/* -- CONTRIBUTIONS -- */}
+        {tab==="contributions"&&(<>
+          <Card>
+            <Lbl>Record Contribution</Lbl>
+            <Sel label="Member" value={cUid} onChange={e=>setCUid(e.target.value)}>
+              <option value="">— select member —</option>
+              {db.users.map(u=><option key={u.id} value={u.id}>{u.name}</option>)}
+            </Sel>
+            <Field label="Amount (₹)" icon="₹" type="number" value={cAmt} onChange={e=>setCAmt(e.target.value)} placeholder="25000"/>
+            <Field label="Date" icon="📅" type="date" value={cDate} onChange={e=>setCDate(e.target.value)}/>
+            <Field label="Note (optional)" icon="📝" value={cNote} onChange={e=>setCNote(e.target.value)} placeholder="e.g. Monthly SIP"/>
+            <Btn full color="var(--green)" onClick={async()=>{
+              if(!cUid||!cAmt||!cDate)return show("Fill all fields",false);
+              await dbAddContrib({userId:cUid,amount:cAmt,date:cDate,note:cNote});
+              show("Contribution recorded v");setCAmt("");setCNote("");onUpdate();
+            }}>Record Contribution</Btn>
+          </Card>
+          <Card>
+            <Lbl>All Contributions ({db.contributions.length})</Lbl>
+            {db.contributions.length===0&&<div style={{textAlign:"center",color:"var(--text3)",fontSize:13,padding:"12px 0"}}>None yet</div>}
+            {[...db.contributions].sort((a,b)=>b.date.localeCompare(a.date)).map((c,i,arr)=>{
+              const u=db.users.find(x=>x.id===(c.user_id||c.userId));
+              return(
+                <div key={c.id} style={{display:"flex",alignItems:"center",gap:8,padding:"9px 0",borderBottom:i<arr.length-1?"1px solid var(--border)":"none"}}>
+                  {u&&<Avatar user={u} size={28}/>}
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontSize:12,fontWeight:600,color:"var(--text)"}}>{u?.name||"?"}</div>
+                    <div style={{fontSize:10,color:"var(--text3)"}}>{c.date}{c.note?" · "+c.note:""}</div>
+                  </div>
+                  <div style={{fontSize:13,fontWeight:700,color:"var(--green)",fontFamily:"'DM Mono',monospace",marginRight:4}}>+{fmt(c.amount)}</div>
+                  <button onClick={()=>setEditSheet({type:"contrib",data:c})} style={{background:"var(--bg3)",border:"1px solid var(--border2)",borderRadius:7,padding:"4px 7px",cursor:"pointer",color:"var(--text2)",fontSize:11}}>✏️</button>
+                  <button onClick={()=>setConfirm({msg:`Delete ₹${c.amount} contribution by ${u?.name}?`,fn:async()=>{await dbDeleteContrib(c.id);onUpdate();show("Deleted");}})} style={{background:"var(--red-d)",border:"1px solid var(--red)44",borderRadius:7,padding:"4px 7px",cursor:"pointer",color:"var(--red-l)",fontSize:11}}>🗑</button>
+                </div>
+              );
+            })}
+          </Card>
+        </>)}
+
+        {/* -- TRADES -- */}
+        {tab==="trades"&&(<>
+          <Card>
+            <Lbl>Record Trade</Lbl>
+            <div style={{display:"flex",gap:8,marginBottom:10}}>
+              {["BUY","SELL"].map(t=>(
+                <button key={t} onClick={()=>setTType(t)}
+                  style={{flex:1,padding:"9px",border:`1.5px solid ${tType===t?(t==="BUY"?"var(--green)":"var(--red)"):"var(--border)"}`,
+                    borderRadius:9,background:tType===t?(t==="BUY"?"var(--green-d)":"var(--red-d)"):"var(--bg)",
+                    color:tType===t?(t==="BUY"?"var(--green-l)":"var(--red-l)"):"var(--text3)",
+                    fontSize:13,fontWeight:700,cursor:"pointer"}}>
+                  {t==="BUY"?"📈 BUY":"📉 SELL"}
+                </button>
+              ))}
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+              <Field label="Symbol" icon="🔷" value={tSym} onChange={e=>{setTSym(e.target.value.toUpperCase());setFetched(null);}} placeholder="e.g. INFY"/>
+              <Field label="Company name" value={tName} onChange={e=>setTName(e.target.value)} placeholder="optional"/>
+            </div>
+            <ExchangeToggle value={tExch} onChange={ex=>setTExch(ex)} sym={tSym}/>
+            <div style={{display:"flex",gap:8,marginBottom:10}}>
+              <div style={{flex:1}}>
+                <label style={{fontSize:11,color:"var(--text2)",display:"block",marginBottom:4,fontWeight:500}}>Price (₹)</label>
+                <input type="number" value={tPrice} onChange={e=>{setTPrice(e.target.value);setFetched(null);}} placeholder="0.00"
+                  style={{width:"100%",padding:"10px 12px",border:"1px solid var(--border2)",borderRadius:9,background:"var(--bg3)",color:"var(--text)",fontSize:14,outline:"none"}}/>
+              </div>
+              <div style={{display:"flex",alignItems:"flex-end",gap:6}}>
+                <Btn sm onClick={()=>tSym&&doFetch(tSym,tExch)} disabled={!tSym||fetchBusy} color="var(--gold)">
+                  {fetchBusy?<span className="spinner"/>:"⚡ Live"}
+                </Btn>
+              </div>
+            </div>
+            {fetched!==null&&<div style={{fontSize:11,color:"var(--green)",marginBottom:6}}>v Live: ₹{fetched.toFixed(2)}</div>}
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+              <Field label="Shares" icon="#" type="number" value={tShares} onChange={e=>setTShares(e.target.value)} placeholder="0"/>
+              <Field label="Date" icon="📅" type="date" value={tDate} onChange={e=>setTDate(e.target.value)}/>
+            </div>
+            <Field label="Note (optional)" icon="📝" value={tNote} onChange={e=>setTNote(e.target.value)} placeholder="optional"/>
+            <Btn full color={tType==="BUY"?"var(--green)":"var(--red)"} onClick={async()=>{
+              if(!tSym||!tShares||!tPrice||!tDate)return show("Fill all required fields",false);
+              await dbAddTrade({symbol:tSym,name:tName,exchange:tExch,type:tType,shares:tShares,price:tPrice,date:tDate,note:tNote});
+              show("Trade recorded v");setTSym("");setTName("");setTShares("");setTPrice("");setTNote("");setFetched(null);onUpdate();
+            }}>Record {tType}</Btn>
+          </Card>
+          <Btn full color="var(--purple)" style={{marginBottom:10}} onClick={fetchAll}>⚡ Refresh All Live Prices</Btn>
+          <Card>
+            <Lbl>All Trades ({db.trades.length})</Lbl>
+            {db.trades.length===0&&<div style={{textAlign:"center",color:"var(--text3)",fontSize:13,padding:"12px 0"}}>None yet</div>}
+            {[...db.trades].sort((a,b)=>b.date.localeCompare(a.date)).map((t,i,arr)=>(
+              <div key={t.id} style={{display:"flex",alignItems:"center",gap:8,padding:"9px 0",borderBottom:i<arr.length-1?"1px solid var(--border)":"none"}}>
+                <div style={{width:36,height:36,borderRadius:9,background:t.type==="BUY"?"var(--green-d)":"var(--red-d)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,flexShrink:0}}>{t.type==="BUY"?"📈":"📉"}</div>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                    <span style={{fontSize:12,fontWeight:700,color:"var(--text)",fontFamily:"'DM Mono',monospace"}}>{t.symbol}</span>
+                    <span style={{fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:8,background:t.exchange==="NSE"?"#0d3d1a":"#0d1a3d",color:t.exchange==="NSE"?"#5eedb0":"#7fb3ff"}}>{t.exchange||"NSE"}</span>
+                  </div>
+                  <div style={{fontSize:10,color:"var(--text3)",marginTop:1}}>{t.date} · {t.shares} sh @ {fmt(t.price)}</div>
+                </div>
+                <div style={{textAlign:"right",marginRight:4}}>
+                  <div style={{fontSize:12,fontWeight:700,color:t.type==="BUY"?"var(--green)":"var(--red)"}}>{t.type==="BUY"?"+":"-"}{fmt(t.shares*t.price)}</div>
+                </div>
+                <button onClick={()=>setEditSheet({type:"trade",data:t})} style={{background:"var(--bg3)",border:"1px solid var(--border2)",borderRadius:7,padding:"4px 7px",cursor:"pointer",color:"var(--text2)",fontSize:11}}>✏️</button>
+                <button onClick={()=>setConfirm({msg:`Delete ${t.type} trade for ${t.symbol}?`,fn:async()=>{await dbDeleteTrade(t.id);onUpdate();show("Deleted");}})} style={{background:"var(--red-d)",border:"1px solid var(--red)44",borderRadius:7,padding:"4px 7px",cursor:"pointer",color:"var(--red-l)",fontSize:11}}>🗑</button>
+              </div>
+            ))}
+          </Card>
+        </>)}
+
+      </div>
+    </div>
+  );
+}
+
+/* ==============================================================
+   ACCOUNT TAB
+============================================================== */
+function AccountTab({db,user,pnl,onLogout,onDisconnect}){
+  const[toast,show]=useToast();
+  const me=pnl.perUser.find(u=>u.user.id===user.id)||{contrib:0,pl:0,plPct:"0.00",sharePct:"0.0",currentValue:0,realized:0,unrealized:0,cashShare:0};
+  const myContribs=db.contributions.filter(c=>(c.user_id||c.userId)===user.id).sort((a,b)=>b.date.localeCompare(a.date));
+  return(
+    <div style={{padding:"12px 12px 20px",animation:"fadeIn .3s"}}>
+      {toast&&<Toast msg={toast.msg} ok={toast.ok}/>}
+      <Card>
+        <div style={{display:"flex",alignItems:"center",gap:14,marginBottom:14}}>
+          <Avatar user={user} size={50}/>
+          <div>
+            <div style={{fontSize:17,fontWeight:700,color:"var(--text)"}}>{user.name}</div>
+            <div style={{fontSize:11,color:"var(--text3)",fontFamily:"'DM Mono',monospace"}}>📱 {user.mobile}</div>
+            <Pill c={user.role==="admin"?"var(--gold)":"var(--blue)"}>{user.role.toUpperCase()}</Pill>
+          </div>
+        </div>
+        <div style={{display:"flex",justifyContent:"space-around",paddingTop:12,borderTop:"1px solid var(--border)"}}>
+          {[
+            {l:"Invested",v:fmt(me.contrib),c:"var(--text)"},
+            {l:"Value",v:fmt(me.currentValue),c:"var(--blue)"},
+            {l:"P&L",v:(me.pl>=0?"+":"-")+fmt(me.pl),c:plColor(me.pl)},
+          ].map(m=>(
+            <div key={m.l} style={{textAlign:"center"}}>
+              <div style={{fontSize:9,color:"var(--text3)",marginBottom:2,fontFamily:"'DM Mono',monospace"}}>{m.l}</div>
+              <div style={{fontSize:13,fontWeight:700,color:m.c}}>{m.v}</div>
+            </div>
+          ))}
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginTop:8}}>
+          {[
+            {l:"Realized",v:(me.realized>=0?"+":"-")+fmt(me.realized),c:plColor(me.realized),bg:"var(--green-d)"},
+            {l:"Unrealized",v:(me.unrealized>=0?"+":"-")+fmt(me.unrealized),c:plColor(me.unrealized),bg:"var(--blue-d)"},
+            {l:"Cash Share",v:fmt(me.cashShare),c:"var(--gold)",bg:"var(--gold-d)"},
+          ].map(m=>(
+            <div key={m.l} style={{background:m.bg,borderRadius:8,padding:"8px 10px"}}>
+              <div style={{fontSize:9,color:"var(--text3)",fontFamily:"'DM Mono',monospace"}}>{m.l}</div>
+              <div style={{fontSize:12,fontWeight:700,color:m.c,marginTop:2}}>{m.v}</div>
+            </div>
+          ))}
+        </div>
+      </Card>
+      <Card>
+        <Lbl>Download Reports</Lbl>
+        {[
+          {icon:"📄",title:"My Personal Statement",sub:"My contributions, P&L, return % — XLSX",color:"var(--green)",fn:()=>{exportPersonal(db,user,pnl);show("Downloaded v");}},
+          {icon:"📊",title:"Group Report",sub:"All members P&L + portfolio — XLSX",color:"var(--blue)",fn:()=>{exportGroup(db,pnl);show("Downloaded v");}},
+        ].map(r=>(
+          <button key={r.title} onClick={r.fn} style={{display:"flex",alignItems:"center",gap:12,padding:"12px 13px",background:"var(--bg3)",border:`1px solid ${r.color}33`,borderRadius:12,cursor:"pointer",textAlign:"left",width:"100%",marginBottom:8}}>
+            <div style={{width:36,height:36,borderRadius:9,background:r.color+"22",display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,flexShrink:0}}>{r.icon}</div>
+            <div style={{flex:1}}><div style={{fontSize:13,fontWeight:700,color:"var(--text)"}}>{r.title}</div><div style={{fontSize:10,color:"var(--text3)",marginTop:1}}>{r.sub}</div></div>
+            <span style={{fontSize:10,fontWeight:700,color:r.color,border:`1px solid ${r.color}44`,padding:"3px 9px",borderRadius:15}}>⬇ XLSX</span>
+          </button>
+        ))}
+      </Card>
+      <Card>
+        <Lbl>My Contributions</Lbl>
+        {myContribs.length===0&&<div style={{textAlign:"center",color:"var(--text3)",fontSize:13,padding:"14px 0"}}>No contributions yet</div>}
+        {myContribs.map((c,i)=>(
+          <div key={c.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:i<myContribs.length-1?"1px solid var(--border)":"none"}}>
+            <div>
+              <div style={{fontSize:12,fontWeight:600,color:"var(--text)"}}>{c.date}</div>
+              {c.note&&<div style={{fontSize:10,color:"var(--text3)",marginTop:1}}>{c.note}</div>}
+            </div>
+            <div style={{fontSize:13,fontWeight:700,color:"var(--green)",fontFamily:"'DM Mono',monospace"}}>+{fmt(c.amount)}</div>
+          </div>
+        ))}
+        {myContribs.length>0&&(
+          <div style={{display:"flex",justifyContent:"space-between",marginTop:10,paddingTop:10,borderTop:"1px solid var(--border)"}}>
+            <span style={{fontSize:11,color:"var(--text3)",fontWeight:600}}>Total</span>
+            <span style={{fontSize:14,fontWeight:700,color:"var(--blue)",fontFamily:"'DM Mono',monospace"}}>{fmt(me.contrib)}</span>
+          </div>
+        )}
+      </Card>
+      <Btn ghost full color="var(--red)" onClick={onLogout} style={{marginBottom:8}}>Sign Out</Btn>
+      <Btn ghost full color="var(--text3)" onClick={onDisconnect} style={{fontSize:12}}>⚙ Change Supabase Connection</Btn>
+    </div>
+  );
+}
+
+/* ==============================================================
+   APP ROOT
+============================================================== */
+function App(){
+  const[sbReady,setSbReady]=useState(getSB().ready);
+  const[db,setDB]=useState(null);
+  const[user,setUser]=useState(null);
+  const[tab,setTab]=useState("home");
+  const[loading,setLoading]=useState(false);
+  const[needsSetup,setNeedsSetup]=useState(false);
+
+  const refresh=useCallback(async()=>{
+    setLoading(true);
+    try{const d=await loadDB();setDB(d);}catch(e){console.error(e);}
+    setLoading(false);
+  },[]);
+
+  // On SB connect: ensure admin row, check setup
+  useEffect(()=>{
+    if(!sbReady)return;
+    (async()=>{
+      setLoading(true);
+      try{
+        await dbEnsureAdmin();
+        const setup=await dbCheckSetup();
+        setNeedsSetup(setup);
+        const d=await loadDB();
+        setDB(d);
+      }catch(e){console.error(e);}
+      setLoading(false);
+    })();
+  },[sbReady]);
+
+  const pnl=useMemo(()=>db?calcPnL(db):{totalPool:0,totalBuySpend:0,totalSellReceived:0,cash:0,currentMV:0,currentCost:0,realizedTotal:0,unrealizedTotal:0,totalPL:0,totalPLPct:"0.00",perUser:[],holdings:[]},[db]);
+  const isAdmin=user?.role==="admin";
+
+  // Price refresh
+  useEffect(()=>{
+    if(!user||!db)return;
+    const realFetch=async()=>{
+      const holdings=calcHoldings(db);
+      if(!holdings.length)return;
+      let updated=false;
+      for(const h of holdings){
+        const res=await fetchLivePrice(h.symbol,h.exchange);
+        if(res.ok){await dbSetPrice(h.symbol,res.price);updated=true;}
+      }
+      if(updated)refresh();
+    };
+    // micro-tick: in-memory drift only (no DB writes for micro)
+    const microTick=()=>{
+      if(!db)return;
+      const holdings=calcHoldings(db);
+      if(!holdings.length)return;
+      let changed=false;
+      holdings.forEach(h=>{
+        const cur=db.prices[h.symbol];
+        if(cur===undefined)return;
+        const drift=(Math.random()-0.495)*cur*0.0015;
+        const next=Math.max(0.01,parseFloat((cur+drift).toFixed(4)));
+        db.prices[h.symbol]=next;
+        if(!db.priceHistory[h.symbol])db.priceHistory[h.symbol]=[];
+        db.priceHistory[h.symbol].push({t:Date.now(),p:next});
+        if(db.priceHistory[h.symbol].length>40)db.priceHistory[h.symbol]=db.priceHistory[h.symbol].slice(-40);
+        changed=true;
+      });
+      if(changed)setDB({...db});
+    };
+    realFetch();
+    const realId=setInterval(realFetch,60000);
+    const microId=setInterval(microTick,3000);
+    return()=>{clearInterval(realId);clearInterval(microId);};
+  },[user]);
+
+  if(!sbReady)return<SupabaseSetup onReady={()=>setSbReady(true)}/>;
+
+  if(loading&&!db)return(
+    <div style={{minHeight:"100vh",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",background:"var(--bg)",gap:12}}>
+      <span className="spinner" style={{width:32,height:32,borderWidth:3}}/>
+      <div style={{fontSize:13,color:"var(--text3)"}}>Loading InvestClub…</div>
+    </div>
+  );
+
+  if(needsSetup)return<SetupScreen onDone={async()=>{setNeedsSetup(false);await refresh();}}/>;
+  if(!user)return<LoginScreen onLogin={u=>{setUser(u);setTab("home");}}/>;
+
+  const tabs=[
+    {id:"home",label:"Home",icon:"🏠"},
+    {id:"pnl",label:"P & L",icon:"📊"},
+    ...(isAdmin?[{id:"admin",label:"Admin",icon:"⚙️"}]:[]),
+    {id:"account",label:"Account",icon:"👤"},
+  ];
+
+  return(
+    <div style={{maxWidth:420,margin:"0 auto",minHeight:"100vh",background:"var(--bg)",display:"flex",flexDirection:"column"}}>
+      <div style={{background:"var(--bg2)",borderBottom:"1px solid var(--border)",padding:"12px 16px 10px",display:"flex",alignItems:"center",justifyContent:"space-between",position:"sticky",top:0,zIndex:10}}>
+        <div>
+          <div style={{fontSize:17,fontWeight:700,color:"var(--text)",letterSpacing:-.3}}>InvestClub</div>
+          <div style={{fontSize:10,color:"var(--text3)",marginTop:1,fontFamily:"'DM Mono',monospace"}}>
+            <span style={{display:"inline-block",width:5,height:5,borderRadius:3,background:"var(--green)",marginRight:4,animation:"blink 1.4s infinite"}}/>
+            {db?.users?.length||0} members · {pnl.holdings.length} stocks
+          </div>
+        </div>
+        <div style={{textAlign:"right"}}>
+          <div style={{fontSize:9,color:"var(--text3)",fontFamily:"'DM Mono',monospace",marginBottom:1}}>GROUP P&L</div>
+          <div style={{fontSize:14,fontWeight:700,color:plColor(pnl.totalPL),fontFamily:"'DM Mono',monospace"}}>{plSign(pnl.totalPL)}{fmt(pnl.totalPL)}</div>
+          <div style={{fontSize:9,color:"var(--gold)"}}>💰 Cash: {fmt(pnl.cash)}</div>
+        </div>
+      </div>
+      <div style={{flex:1,overflowY:"auto",paddingBottom:68}}>
+        {tab==="home"&&db&&<Dashboard db={db} user={user} pnl={pnl}/>}
+        {tab==="pnl"&&<PnLTab pnl={pnl} user={user}/>}
+        {tab==="admin"&&isAdmin&&db&&<AdminPanel db={db} onUpdate={refresh}/>}
+        {tab==="account"&&db&&<AccountTab db={db} user={user} pnl={pnl} onLogout={()=>setUser(null)} onDisconnect={()=>{sessionStorage.removeItem("sb_url");sessionStorage.removeItem("sb_key");setSbReady(false);setUser(null);setDB(null);}}/>}
+      </div>
+      <div style={{position:"fixed",bottom:0,left:"50%",transform:"translateX(-50%)",width:"100%",maxWidth:420,background:"var(--bg2)",borderTop:"1px solid var(--border)",display:"flex",zIndex:20}}>
+        {tabs.map(t=>(
+          <button key={t.id} onClick={()=>setTab(t.id)}
+            style={{flex:1,padding:"9px 0 11px",background:"none",border:"none",cursor:"pointer",display:"flex",flexDirection:"column",alignItems:"center",gap:2,
+              borderTop:`2px solid ${tab===t.id?"var(--blue)":"transparent"}`,color:tab===t.id?"var(--blue)":"var(--text3)",transition:"color .15s"}}>
+            <span style={{fontSize:17}}>{t.icon}</span>
+            <span style={{fontSize:8,fontWeight:700,letterSpacing:.4,fontFamily:"'DM Mono',monospace"}}>{t.label}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+
+// -- PWA Install Prompt --
+let deferredPrompt=null;
+window.addEventListener("beforeinstallprompt",(e)=>{
+  e.preventDefault();deferredPrompt=e;showInstallBanner();
+});
+function showInstallBanner(){
+  if(document.getElementById("ic-install-banner"))return;
+  const banner=document.createElement("div");
+  banner.id="ic-install-banner";
+  banner.innerHTML=`<div style="position:fixed;bottom:76px;left:50%;transform:translateX(-50%);width:calc(100% - 32px);max-width:388px;background:linear-gradient(135deg,#1a3a7a,#0d3d28);border:1px solid #4f8ef7;border-radius:14px;padding:14px 16px;z-index:1000;box-shadow:0 8px 32px rgba(0,0,0,.6);display:flex;align-items:center;gap:12px;animation:fadeIn .3s"><span style="font-size:28px;flex-shrink:0">📲</span><div style="flex:1"><div style="font-size:13px;font-weight:700;color:#f0f2ff">Install InvestClub</div><div style="font-size:11px;color:#9ba3c4;margin-top:2px">Add to home screen for app-like experience</div></div><button onclick="installApp()" style="padding:8px 14px;background:#4f8ef7;color:#fff;border:none;border-radius:9px;font-size:12px;font-weight:700;cursor:pointer;flex-shrink:0">Install</button><button onclick="dismissBanner()" style="background:none;border:none;color:#636b8a;cursor:pointer;font-size:18px;padding:0 4px;flex-shrink:0">✕</button></div>`;
+  document.body.appendChild(banner);
+}
+window.installApp=async function(){if(!deferredPrompt)return;deferredPrompt.prompt();const{outcome}=await deferredPrompt.userChoice;deferredPrompt=null;dismissBanner();};
+window.dismissBanner=function(){const b=document.getElementById("ic-install-banner");if(b)b.remove();};
+const isIOS=/iphone|ipad|ipod/i.test(navigator.userAgent);
+const isInStandalone=window.navigator.standalone===true;
+const dismissed=sessionStorage.getItem("ic-ios-dismissed");
+if(isIOS&&!isInStandalone&&!dismissed){setTimeout(()=>{
+  if(document.getElementById("ic-install-banner"))return;
+  const banner=document.createElement("div");banner.id="ic-install-banner";
+  banner.innerHTML=`<div style="position:fixed;bottom:76px;left:50%;transform:translateX(-50%);width:calc(100% - 32px);max-width:388px;background:linear-gradient(135deg,#1a3a7a,#0d3d28);border:1px solid #4f8ef7;border-radius:14px;padding:14px 16px;z-index:1000;box-shadow:0 8px 32px rgba(0,0,0,.6);animation:fadeIn .3s"><div style="display:flex;align-items:center;gap:12px;margin-bottom:10px"><span style="font-size:26px">📲</span><div style="flex:1"><div style="font-size:13px;font-weight:700;color:#f0f2ff">Install on iPhone</div><div style="font-size:11px;color:#9ba3c4;margin-top:2px">Open in Safari to install</div></div><button onclick="sessionStorage.setItem('ic-ios-dismissed','1');dismissBanner()" style="background:none;border:none;color:#636b8a;cursor:pointer;font-size:18px">✕</button></div><div style="background:#0f1117;border-radius:9px;padding:10px 12px;font-size:12px;color:#9ba3c4;line-height:1.7">1. Tap the <strong style="color:#4f8ef7">Share</strong> button <strong style="color:#f0f2ff">⎙</strong> in Safari<br/>2. Scroll down and tap <strong style="color:#4f8ef7">"Add to Home Screen"</strong><br/>3. Tap <strong style="color:#4f8ef7">"Add"</strong> — InvestClub appears on your home screen 🎉</div></div>`;
+  document.body.appendChild(banner);
+},2000);}
+if("serviceWorker" in navigator){
+  const swCode=`const CACHE="investclub-v2";self.addEventListener("install",e=>e.waitUntil(caches.open(CACHE).then(c=>c.addAll(["${window.location.href}"]))));self.addEventListener("fetch",e=>e.respondWith(fetch(e.request).catch(()=>caches.match(e.request))));`;
+  const blob=new Blob([swCode],{type:"text/javascript"});
+  navigator.serviceWorker.register(URL.createObjectURL(blob)).catch(()=>{});
+}
+</script>
+</body>
+</html>
