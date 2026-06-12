@@ -47,8 +47,8 @@ const {useState,useEffect,useRef,useCallback,useMemo}=React;
      const HARDCODED_URL = "https://xxxx.supabase.co";
      const HARDCODED_KEY = "eyJhbGci...";
 ============================================================== */
-const HARDCODED_URL = "";   // <- paste your Supabase Project URL here
-const HARDCODED_KEY = "";   // <- paste your Supabase anon/public key here
+const HARDCODED_URL = "https://qellmrkqlyilhnhrlpmi.supabase.co";   // <- paste your Supabase Project URL here
+const HARDCODED_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFlbGxtcmtxbHlpbGhuaHJscG1pIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODEyNDU4OTcsImV4cCI6MjA5N";   // <- paste your Supabase anon/public key here
 
 function getSB(){
   const url=(HARDCODED_URL||(sessionStorage.getItem("sb_url")||"")).trim().replace(/\/+$/,"");
