@@ -844,21 +844,23 @@ function Dashboard({db,user,pnl}){
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:10}}>
           {/* Current Investment Value */}
           <div style={{background:"var(--blue-d)",borderRadius:11,padding:"11px 13px",border:"1px solid var(--blue)33"}}>
-            <div style={{fontSize:9,color:"var(--blue-l)",fontFamily:"'DM Mono',monospace",fontWeight:700,marginBottom:4}}>CURRENT INV. VALUE</div>
-            <div style={{fontSize:18,fontWeight:700,color:"var(--text)"}}>{fmt(pnl.currentMV+pnl.cash)}</div>
-            <div style={{fontSize:9,color:"var(--text3)",marginTop:2}}>Stocks + cash</div>
+            <div style={{fontSize:9,color:"var(--blue-l)",fontFamily:"'DM Mono',monospace",fontWeight:700,marginBottom:4}}>CURRENTLY INVESTED</div>
+            <div style={{fontSize:18,fontWeight:700,color:"var(--text)"}}>{fmt(pnl.currentCost)}</div>
+            <div style={{fontSize:9,color:"var(--text3)",marginTop:2}}>Live value: {fmt(pnl.currentMV)}</div>
           </div>
-          {/* Current P&L */}
-          <div style={{background:gUp?"var(--green-d)":"var(--red-d)",borderRadius:11,padding:"11px 13px",border:`1px solid ${gUp?"var(--green)":"var(--red)"}33`}}>
-            <div style={{fontSize:9,color:gUp?"var(--green-l)":"var(--red-l)",fontFamily:"'DM Mono',monospace",fontWeight:700,marginBottom:4}}>CURRENT P&L</div>
-            <div style={{fontSize:18,fontWeight:700,color:plColor(pnl.totalPL)}}>{plSign(pnl.totalPL)}{fmt(pnl.totalPL)}</div>
-            <div style={{fontSize:9,color:"var(--text3)",marginTop:2}}>{plSign(pnl.totalPL)}{pnl.totalPLPct}% overall return</div>
+          {/* Current P&L - unrealized only (live stocks) */}
+          {(()=>{const up=pnl.unrealizedTotal>=0;return(
+          <div style={{background:up?"var(--green-d)":"var(--red-d)",borderRadius:11,padding:"11px 13px",border:`1px solid ${up?"var(--green)":"var(--red)"}33`}}>
+            <div style={{fontSize:9,color:up?"var(--green-l)":"var(--red-l)",fontFamily:"'DM Mono',monospace",fontWeight:700,marginBottom:4}}>CURRENT STOCK P&L</div>
+            <div style={{fontSize:18,fontWeight:700,color:plColor(pnl.unrealizedTotal)}}>{plSign(pnl.unrealizedTotal)}{fmt(pnl.unrealizedTotal)}</div>
+            <div style={{fontSize:9,color:"var(--text3)",marginTop:2}}>On holdings at live price</div>
           </div>
+          );})()}
         </div>
         <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8,paddingTop:10,borderTop:"1px solid var(--border)"}}>
           {[
-            {l:"TOTAL INVESTED",v:fmt(pnl.totalPool),c:"var(--text)",sub:`${db.users.length} members`},
-            {l:"MARKET VALUE",v:fmt(pnl.currentMV),c:"var(--blue-l)",sub:`${pnl.holdings.length} stocks`},
+            {l:"TOTAL POOL",v:fmt(pnl.totalPool),c:"var(--text)",sub:`${db.users.length} members`},
+            {l:"REALIZED P&L",v:plSign(pnl.realizedTotal)+fmt(pnl.realizedTotal),c:plColor(pnl.realizedTotal),sub:"Booked gains"},
             {l:"NAV",v:pnl.currentNAV?"Rs"+(pnl.currentNAV).toFixed(2):"--",c:"var(--gold)",sub:"Base Rs1,000"},
           ].map(m=>(
             <div key={m.l}>
@@ -894,15 +896,17 @@ function PnLTab({pnl,user,db}){
       {/* Group current value + P&L hero */}
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:10}}>
         <div style={{background:"var(--blue-d)",borderRadius:13,padding:"13px 14px",border:"1px solid var(--blue)33"}}>
-          <div style={{fontSize:9,color:"var(--blue-l)",fontFamily:"'DM Mono',monospace",fontWeight:700,marginBottom:5}}>CURRENT INV. VALUE</div>
-          <div style={{fontSize:20,fontWeight:700,color:"var(--text)"}}>{fmt(pnl.currentMV+pnl.cash)}</div>
-          <div style={{fontSize:9,color:"var(--text3)",marginTop:3}}>Total pool value today</div>
+          <div style={{fontSize:9,color:"var(--blue-l)",fontFamily:"'DM Mono',monospace",fontWeight:700,marginBottom:5}}>CURRENTLY INVESTED</div>
+          <div style={{fontSize:20,fontWeight:700,color:"var(--text)"}}>{fmt(pnl.currentCost)}</div>
+          <div style={{fontSize:9,color:"var(--text3)",marginTop:3}}>Live value: {fmt(pnl.currentMV)}</div>
         </div>
-        <div style={{background:pnl.totalPL>=0?"var(--green-d)":"var(--red-d)",borderRadius:13,padding:"13px 14px",border:`1px solid ${pnl.totalPL>=0?"var(--green)":"var(--red)"}33`}}>
-          <div style={{fontSize:9,color:pnl.totalPL>=0?"var(--green-l)":"var(--red-l)",fontFamily:"'DM Mono',monospace",fontWeight:700,marginBottom:5}}>CURRENT P&L</div>
-          <div style={{fontSize:20,fontWeight:700,color:plColor(pnl.totalPL)}}>{plSign(pnl.totalPL)}{fmt(pnl.totalPL)}</div>
-          <div style={{fontSize:9,color:"var(--text3)",marginTop:3}}>{plSign(pnl.totalPL)}{pnl.totalPLPct}% overall return</div>
+        {(()=>{const up=pnl.unrealizedTotal>=0;return(
+        <div style={{background:up?"var(--green-d)":"var(--red-d)",borderRadius:13,padding:"13px 14px",border:`1px solid ${up?"var(--green)":"var(--red)"}33`}}>
+          <div style={{fontSize:9,color:up?"var(--green-l)":"var(--red-l)",fontFamily:"'DM Mono',monospace",fontWeight:700,marginBottom:5}}>CURRENT STOCK P&L</div>
+          <div style={{fontSize:20,fontWeight:700,color:plColor(pnl.unrealizedTotal)}}>{plSign(pnl.unrealizedTotal)}{fmt(pnl.unrealizedTotal)}</div>
+          <div style={{fontSize:9,color:"var(--text3)",marginTop:3}}>Live price vs avg buy price</div>
         </div>
+        );})()}
       </div>
 
       {/* Last updated timestamp */}
